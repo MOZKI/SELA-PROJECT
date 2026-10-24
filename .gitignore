@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# SELA
+.env
+*.pem
+*.key
+firmware/secrets.h
+data/raw/
+*.pkl

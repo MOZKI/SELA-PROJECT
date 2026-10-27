@@ -226,3 +226,7 @@ __marimo__/
 firmware/secrets.h
 data/raw/
 *.pkl
+*.db
+*.db-wal
+*.db-shm
+.venv/

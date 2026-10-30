@@ -37,11 +37,9 @@ Coba dari terminal lain (ganti KUNCI dengan isi `.env`):
 ```bash
 curl -s localhost:8000/health
 
-curl -s -X POST localhost:8000/telemetry \
-  -H "X-API-Key: KUNCI" -H "Content-Type: application/json" \
-  -d '{"device_id":"sela-node-a","boot_id":"b1","seq":0,"ts":1000,"source":"synthetic","relay_on":true,"sensor_ok":true,"power":10}'
+curl -s -X POST localhost:8000/telemetry -H "X-API-Key: $SELA_API_KEY" -H "Content-Type: application/json" -d '{"device_id":"sela-node-a","boot_id":"b1","seq":0,"ts":1000,"source":"synthetic","relay_on":true,"sensor_ok":true,"power":10}'
 
-curl -s localhost:8000/state -H "X-API-Key: KUNCI"
+curl -s localhost:8000/state -H "X-API-Key: $SELA_API_KEY"
 ```
 
 Dokumentasi interaktif otomatis ada di http://localhost:8000/docs

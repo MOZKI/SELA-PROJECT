@@ -59,6 +59,7 @@ ESP32 wajib membaca `lockout`. Bila `true`, tolak perintah ON baru secara lokal.
 | `GET /state`        | Saldo, lockout, daya total, status tiap node (online bila ada data dalam 15 detik), `partial` bila ada node offline |
 | `POST /topup`       | `{"amount_wh": 5}`: saldo bertambah, lockout lepas, lampu tetap OFF                                                 |
 | `POST /admin/reset` | `{"balance_wh": 5}`: untuk pengembangan dan demo, mengembalikan saldo dan menghapus status node                     |
+| `GET /alerts`       | Peringatan terbaru dulu. Opsional `?since=<epoch server>&limit=N`                                                   |
 | `GET /health`       | Cek hidup, tanpa API key                                                                                            |
 
 ## Tabel database (SQLite)

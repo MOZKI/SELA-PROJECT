@@ -4,7 +4,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from . import service
@@ -101,5 +101,15 @@ def post_reset(body: Reset, _: None = Depends(require_key)):
     try:
         with tx(conn):
             return service.do_reset(conn, body.balance_wh, now())
+    finally:
+        conn.close()
+
+
+@app.get("/alerts")
+def get_alerts(since: float = 0.0, limit: int = Query(default=100, ge=1, le=1000),
+               _: None = Depends(require_key)):
+    conn = connect(db_path())
+    try:
+        return service.get_alerts(conn, since, limit)
     finally:
         conn.close()

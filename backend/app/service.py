@@ -165,3 +165,12 @@ def do_reset(conn: sqlite3.Connection, balance_wh: float, now_s: float) -> Dict[
     )
     conn.execute("DELETE FROM device_last")
     return get_state(conn, now_s)
+
+
+def get_alerts(conn: sqlite3.Connection, since: float = 0.0, limit: int = 100) -> Dict[str, Any]:
+    """Peringatan terbaru dulu. `since` memfilter berdasarkan waktu server (epoch)."""
+    rows = conn.execute(
+        "SELECT id, ts, kind, message FROM alerts WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+        (since, limit),
+    ).fetchall()
+    return {"alerts": [dict(r) for r in rows]}

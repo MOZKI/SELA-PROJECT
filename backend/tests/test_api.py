@@ -152,3 +152,11 @@ def test_low_balance_alert_once(client, env):
     kinds = [r[0] for r in sqlite3.connect(env / "t.db").execute("SELECT kind FROM alerts")]
     assert kinds.count("saldo_rendah") == 1
     assert kinds.count("saldo_habis") == 1
+
+
+def test_alerts_endpoint(client):
+    assert client.get("/alerts").status_code == 401
+    client.post("/topup", json={"amount_wh": 1}, headers=H)
+    r = client.get("/alerts", headers=H).json()
+    assert [a["kind"] for a in r["alerts"]] == ["topup"]
+    assert client.get("/alerts?since=9999999999", headers=H).json()["alerts"] == []

@@ -1,5 +1,0 @@
-#define WIFI_SSID ""
-#define WIFI_PASSWORD ""
-#define SINRIC_APP_KEY ""
-#define SINRIC_APP_SECRET ""
-#define API_KEY ""

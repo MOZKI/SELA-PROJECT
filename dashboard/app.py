@@ -5,6 +5,7 @@ Semua data dari GET /state di backend. Konfigurasi lewat environment variable:
 """
 import hmac
 import os
+from typing import Optional, Tuple
 
 import requests
 import streamlit as st
@@ -13,6 +14,8 @@ API_URL = os.environ.get("SELA_API_URL", "http://localhost:8000").rstrip("/")
 API_KEY = os.environ.get("SELA_API_KEY", "")
 PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 REFRESH_S = 5
+REQUEST_TIMEOUT_S = 5
+LOW_BALANCE_RATIO = 0.2  # peringatan saldo rendah di 20% kuota acuan
 
 NODE_LABELS = {
     "sela-node-a": "Node A (10 W)",
@@ -22,6 +25,8 @@ NODE_LABELS = {
 st.set_page_config(page_title="SELA Dashboard", page_icon="💡", layout="wide")
 
 
+# ---------- Login ----------
+
 def check_login() -> bool:
     """Login satu password. Bila DASHBOARD_PASSWORD kosong, akses ditolak (fail closed)."""
     if st.session_state.get("authed"):
@@ -29,11 +34,12 @@ def check_login() -> bool:
     if not PASSWORD:
         st.error("DASHBOARD_PASSWORD belum diisi di environment. Dashboard tidak bisa dibuka.")
         return False
+
     st.title("SELA Dashboard")
     with st.form("login"):
         pw = st.text_input("Password", type="password")
-        ok = st.form_submit_button("Masuk")
-    if ok:
+        submitted = st.form_submit_button("Masuk")
+    if submitted:
         if hmac.compare_digest(pw.encode(), PASSWORD.encode()):
             st.session_state["authed"] = True
             st.rerun()
@@ -42,12 +48,14 @@ def check_login() -> bool:
     return False
 
 
-def fetch_state():
+# ---------- Data ----------
+
+def fetch_state() -> Tuple[Optional[dict], Optional[str]]:
     """Return (state, error). Salah satunya selalu None."""
     if not API_KEY:
         return None, "SELA_API_KEY belum diisi di environment dashboard."
     try:
-        r = requests.get(f"{API_URL}/state", headers={"X-API-Key": API_KEY}, timeout=5)
+        r = requests.get(f"{API_URL}/state", headers={"X-API-Key": API_KEY}, timeout=REQUEST_TIMEOUT_S)
     except requests.RequestException as e:
         return None, f"Backend tidak terjangkau ({API_URL}): {type(e).__name__}"
     if r.status_code == 401:
@@ -60,30 +68,75 @@ def fetch_state():
         return None, "Balasan backend bukan JSON"
 
 
-def fmt_w(v) -> str:
-    return "—" if v is None else f"{v:.1f} W"
+# ---------- Format ----------
+
+def fmt(value: Optional[float], unit: str, digits: int = 1) -> str:
+    """Angka dengan satuan, atau '—' bila kosong."""
+    return "—" if value is None else f"{value:.{digits}f} {unit}".rstrip()
+
+
+def fmt_w(value: Optional[float]) -> str:
+    return fmt(value, "W")
+
+
+def measurements_caption(m: dict) -> str:
+    """Ringkasan V, A, PF, Hz, register energi. Field yang kosong ditampilkan '—'."""
+    parts = [
+        fmt(m.get("voltage"), "V"),
+        fmt(m.get("current"), "A", 3),
+        "PF " + fmt(m.get("pf"), "", 2),
+        fmt(m.get("freq"), "Hz"),
+        "register energi " + fmt(m.get("energy_wh"), "Wh", 0),
+    ]
+    return " · ".join(parts)
+
+
+# ---------- Tampilan ----------
+
+def connection_status(d: dict) -> str:
+    if d["age_s"] is None:
+        return "🔴 **Belum pernah mengirim data**"
+    if d["online"]:
+        return f"🟢 **Online** · data {d['age_s']:.0f} detik lalu"
+    return f"🔴 **Offline** · data terakhir {d['age_s']:.0f} detik lalu"
+
+
+def lamp_status(relay_on: Optional[bool]) -> str:
+    if relay_on is None:
+        return "tidak diketahui"
+    return "💡 ON" if relay_on else "⚫ OFF"
 
 
 def node_card(d: dict) -> None:
     label = NODE_LABELS.get(d["device_id"], d["device_id"])
     with st.container(border=True):
         st.subheader(label)
-        if d["age_s"] is None:
-            st.markdown("🔴 **Belum pernah mengirim data**")
-        elif d["online"]:
-            st.markdown(f"🟢 **Online** · data {d['age_s']:.0f} detik lalu")
-        else:
-            st.markdown(f"🔴 **Offline** · data terakhir {d['age_s']:.0f} detik lalu")
+        st.markdown(connection_status(d))
 
-        if d["relay_on"] is None:
-            lamp = "tidak diketahui"
-        else:
-            lamp = "💡 ON" if d["relay_on"] else "⚫ OFF"
         c1, c2 = st.columns(2)
-        c1.metric("Lampu", lamp)
+        c1.metric("Lampu", lamp_status(d["relay_on"]))
         c2.metric("Daya", fmt_w(d["power_w"]) if d["online"] else "—")
+
+        m = d.get("measurements")
+        if d["online"] and d["sensor_ok"] and m:
+            st.caption(measurements_caption(m))
         if d["sensor_ok"] is False:
             st.caption("⚠️ Sensor gagal dibaca, daya tidak dihitung")
+
+
+def balance_section(state: dict) -> None:
+    ref = state["reference_wh"] or 0
+    bal = state["balance_wh"]
+    ratio = max(0.0, min(1.0, bal / ref)) if ref > 0 else 0.0
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Saldo", f"{bal:.3f} Wh")
+    c2.metric("Daya total", fmt_w(state["total_power_w"]))
+    c3.metric("Kuota acuan", f"{ref:.2f} Wh")
+    st.progress(ratio, text=f"Sisa {ratio * 100:.0f}% dari kuota acuan")
+
+    if not state["lockout"] and ref > 0 and ratio <= LOW_BALANCE_RATIO:
+        st.warning("Saldo rendah (≤ 20% kuota acuan).")
 
 
 @st.fragment(run_every=REFRESH_S)
@@ -98,20 +151,10 @@ def live_view() -> None:
     if state["partial"]:
         st.warning("Data parsial: ada node offline atau belum mengirim data. Daya total hanya dari node yang online.")
 
-    ref = state["reference_wh"] or 0
-    bal = state["balance_wh"]
-    pct = max(0.0, min(1.0, bal / ref)) if ref > 0 else 0.0
+    balance_section(state)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Saldo", f"{bal:.3f} Wh")
-    c2.metric("Daya total", fmt_w(state["total_power_w"]))
-    c3.metric("Kuota acuan", f"{ref:.2f} Wh")
-    st.progress(pct, text=f"Sisa {pct * 100:.0f}% dari kuota acuan")
-    if not state["lockout"] and ref > 0 and pct <= 0.2:
-        st.warning("Saldo rendah (≤ 20% kuota acuan).")
-
-    cols = st.columns(max(1, len(state["devices"])))
-    for col, d in zip(cols, state["devices"]):
+    devices = state["devices"]
+    for col, d in zip(st.columns(max(1, len(devices))), devices):
         with col:
             node_card(d)
 

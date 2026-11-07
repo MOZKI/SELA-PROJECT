@@ -34,13 +34,10 @@ Ini harus beres sebelum Minggu 2 karena tegangan AC baru boleh dipasang setelah 
 ## Sambungan UART PZEM (GPIO16 dan GPIO17)
 
 ```
-PZEM TX ---[ R1 1k ]---+--- GPIO16 (RX2 ESP32)
-                       |
-                    [ R2 2k ]
-                       |
-                      GND
-GPIO17 (TX2 ESP32) -------------- PZEM RX   (langsung, 3,3 V)
-GND ESP32 ------------------------ GND TTL PZEM
+PZEM TX ---[220]---+---[220]---+---[220]--- GND
+                   |
+                   +--> GPIO16 (RX2)   (tap di antara R1 dan R2, ±2/3 dari 4,4 V ≈ 2,9 V)
+GPIO17 (TX2) ---------------------------- PZEM RX (langsung)
 ```
 
 Pembagi 1k dan 2k menurunkan 5 V jadi sekitar 3,3 V (5 x 2/3). Dua nilai lain dengan rasio 1:2 juga bisa (10k dan 20k).

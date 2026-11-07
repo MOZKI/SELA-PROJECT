@@ -119,14 +119,20 @@ def get_state(conn: sqlite3.Connection, now_s: float) -> Dict[str, Any]:
         r = rows.get(dev)
         if r is None:
             devices.append({"device_id": dev, "online": False, "relay_on": None, "sensor_ok": None,
-                            "power_w": None, "last_ts": None, "age_s": None})
+                            "power_w": None, "last_ts": None, "age_s": None, "measurements": None})
             partial = True
             continue
         age = now_s - r["received_at"]
         online = ledger.is_online(age, stale_after_s())
+        m = conn.execute(
+            "SELECT voltage, current, pf, freq, energy_wh FROM telemetry "
+            "WHERE device_id = ? AND boot_id = ? AND seq = ?",
+            (dev, r["boot_id"], r["seq"]),
+        ).fetchone()
         devices.append({"device_id": dev, "online": online, "relay_on": bool(r["relay_on"]),
                         "sensor_ok": bool(r["sensor_ok"]), "power_w": r["power_w"],
-                        "last_ts": r["ts"], "age_s": round(age, 3)})
+                        "last_ts": r["ts"], "age_s": round(age, 3),
+                        "measurements": dict(m) if m is not None else None})
         if online and r["power_w"] is not None:
             total += r["power_w"]
         else:

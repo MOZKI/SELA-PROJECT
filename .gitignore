@@ -223,7 +223,7 @@ __marimo__/
 .env
 *.pem
 *.key
-firmware/secrets.h
+firmware/sela_node/secrets.h
 data/raw/
 *.pkl
 *.db

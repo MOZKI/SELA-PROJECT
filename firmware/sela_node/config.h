@@ -12,14 +12,19 @@
   #define SINRIC_DEVICE_ID SINRIC_DEVICE_B_ID
 #endif
 
-// Relay. Banyak modul 5 V aktif LOW (IN LOW = relay ON). Ubah ke 0 bila modul aktif HIGH.
+// Relay. Banyak modul 5 V aktif LOW (IN LOW = relay ON). Modul yang dipakai: aktif HIGH.
 #define PIN_RELAY          23
 #define RELAY_ACTIVE_LOW   false
 
-// UART PZEM (Serial2). RX ESP32 = GPIO16 menerima TX PZEM LEWAT PEMBAGI TEGANGAN.
+// UART PZEM (Serial2). RX ESP32 = GPIO16 menerima TX PZEM LEWAT PEMBAGI TEGANGAN (3 x 220 ohm seri, tap ke GPIO16).
 #define PIN_PZEM_RX        16
 #define PIN_PZEM_TX        17
 #define PZEM_BAUD          9600
+#define PZEM_ADDR          0xF8      // alamat umum Modbus PZEM
+#define PZEM_TIMEOUT_MS    300
+// Batas kewajaran tegangan. Di luar rentang ini bacaan dianggap gagal (sensor_ok=false), bukan dikirim sebagai data.
+#define PZEM_V_MIN         80.0f
+#define PZEM_V_MAX         270.0f
 
 #define TELEMETRY_INTERVAL_MS 5000
 #define HTTP_TIMEOUT_MS       2000

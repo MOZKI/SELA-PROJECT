@@ -160,3 +160,44 @@ def test_alerts_endpoint(client):
     r = client.get("/alerts", headers=H).json()
     assert [a["kind"] for a in r["alerts"]] == ["topup"]
     assert client.get("/alerts?since=9999999999", headers=H).json()["alerts"] == []
+
+
+def test_state_includes_measurements(client):
+    p = pkt(seq=0, ts=1000, power=19.4)
+    p.update({"voltage": 215.3, "current": 0.139, "pf": 0.66, "freq": 50.0, "energy_wh": 7})
+    client.post("/telemetry", json=p, headers=H)
+    a, b = state(client)["devices"]
+    assert a["measurements"] == {"voltage": 215.3, "current": 0.139, "pf": 0.66, "freq": 50.0, "energy_wh": 7}
+    assert b["measurements"] is None          # node B belum pernah kirim
+
+
+def test_measurements_follow_latest_packet(client):
+    for i, v in enumerate([215.0, 216.0, 217.0]):
+        p = pkt(seq=i, ts=1000 + 5 * i)
+        p["voltage"] = v
+        client.post("/telemetry", json=p, headers=H)
+    assert state(client)["devices"][0]["measurements"]["voltage"] == 217.0
+
+
+def test_buffered_replay_matches_live_and_ignores_resend(client):
+    """Firmware menampung sampel saat gagal kirim lalu mengirim berurutan dari yang terlama,
+    termasuk kirim ulang seq yang kiriman sebelumnya timeout padahal sudah sampai."""
+    def run(order):
+        client.post("/admin/reset", json={"balance_wh": 5}, headers=H)
+        for seq in order:
+            client.post("/telemetry", json=pkt(boot=f"b{len(order)}{order[0]}", seq=seq, ts=1000 + 5 * seq, power=20), headers=H)
+        return state(client)["balance_wh"]
+
+    live = run(list(range(0, 30)))
+    # outage 60 detik (seq 10-21 tertahan), lalu dikirim berurutan; seq 9 dikirim ulang (timeout palsu)
+    replay = run(list(range(0, 10)) + [9] + list(range(10, 30)))
+    assert replay == pytest.approx(live, abs=1e-9)
+    assert live == pytest.approx(5 - 20 * (29 * 5) / 3600, abs=1e-6)
+
+
+def test_replay_has_no_gap_rows(client, env):
+    import sqlite3
+    for seq in range(0, 20):
+        client.post("/telemetry", json=pkt(seq=seq, ts=1000 + 5 * seq, power=20), headers=H)
+    reasons = {r[0] for r in sqlite3.connect(env / "t.db").execute("SELECT reason FROM ledger")}
+    assert reasons <= {"first", "ok"}

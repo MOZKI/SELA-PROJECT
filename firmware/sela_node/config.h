@@ -28,5 +28,11 @@
 
 #define TELEMETRY_INTERVAL_MS 5000
 #define HTTP_TIMEOUT_MS       2000
+// Buffer saat gagal kirim: sampel yang belum terkirim ditampung di RAM (hilang bila ESP32 restart).
+// 120 sampel x 5 detik = 10 menit. Penuh: sampel terlama dibuang dan dihitung.
+#define QUEUE_SIZE            120
+// Batas kerja per siklus 5 detik supaya SinricPro.handle() tidak tertahan lama saat mengosongkan antrean.
+#define MAX_FLUSH_PER_CYCLE   6
+#define FLUSH_BUDGET_MS       1500
 // ON baru hanya diterima bila balasan backend terakhir tidak lebih tua dari ini (aturan offline 15 detik)
 #define PERMISSION_TTL_MS     15000

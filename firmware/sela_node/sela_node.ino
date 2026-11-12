@@ -1,7 +1,9 @@
 // SELA node (Node A atau B, pilih di config.h)
 // Relay OFF saat boot, satu perangkat Sinric, telemetri tiap 5 detik dari PZEM asli (Modbus-RTU langsung),
 // penegakan lockout lokal (tolak ON dari Sinric saat lockout atau izin tak dapat dipastikan).
-// Bacaan PZEM gagal dikirim sebagai sensor_ok=false (bukan 0 W). Belum ada: buffer saat gagal kirim.
+// Bacaan PZEM gagal dikirim sebagai sensor_ok=false (bukan 0 W).
+// Buffer saat gagal kirim: sampel masuk antrean (telemetry_queue.h), dikirim berurutan, hanya dihapus setelah
+// backend membalas ack_seq yang cocok. Kirim ulang memakai seq yang sama (backend menolak duplikat).
 //
 // Library: SinricPro, ArduinoJson (minimal 7.0.3), WebSockets by Markus Sattler (minimal 2.4.0).
 #include <Arduino.h>
@@ -13,6 +15,7 @@
 #include <SinricProSwitch.h>
 #include "secrets.h"
 #include "config.h"
+#include "telemetry_queue.h"
 
 static bool relayOn = false;
 static bool lockout = false;
@@ -23,10 +26,14 @@ static bool resyncSinric = false;   // minta kirim state relay sebenarnya ke Sin
 static uint32_t seqNo = 0;
 static char bootId[9];
 static uint32_t lastSendMs = 0, lastStatusMs = 0, lastWifiTryMs = 0;
-static uint32_t sendOk = 0, sendFail = 0;
+static uint32_t sendOk = 0, sendFail = 0, sendRejected = 0;
+static SampleQueue<QUEUE_SIZE> queue;
 static uint32_t pzemOk = 0, pzemFail = 0;
 
-// Harus didefinisikan SEBELUM fungsi pertama: Arduino IDE 1.x menaruh prototipe otomatis di sana.
+// Tipe (struct/enum) yang dipakai sebagai parameter atau return HARUS didefinisikan SEBELUM fungsi pertama:
+// Arduino IDE 1.x menaruh prototipe otomatis di sana.
+enum SendResult { SEND_OK, SEND_RETRY, SEND_DROP };   // juga harus sebelum fungsi pertama (prototipe otomatis)
+
 struct PzemData {
   float v, i, p, pf, f;
   uint32_t e_wh;
@@ -125,36 +132,44 @@ static bool onPowerState(const String &deviceId, bool &state) {
   return true;
 }
 
-static void sendTelemetry() {
+// Ambil satu sampel dan masukkan ke antrean. Dipanggil tiap TELEMETRY_INTERVAL_MS, TERMASUK saat Wi-Fi putus.
+static void sampleOnce() {
   double ts = nowEpoch();
-  if (ts < 1.6e9) {                 // NTP belum sinkron, jangan kirim ts palsu
-    Serial.println("NTP belum sinkron, telemetri ditunda");
+  if (ts < 1.6e9) {                 // NTP belum sinkron, jangan buat sampel dengan ts palsu
+    Serial.println("NTP belum sinkron, sampel ditunda");
     return;
   }
   PzemData d;
   bool ok = pzemRead(d);
   ts = nowEpoch();                  // waktu sampel diambil sesudah PZEM terbaca
 
-  char meas[200];
+  Sample s = {};
+  s.seq = seqNo++;                  // seq naik SEKALI per sampel; kirim ulang memakai seq yang sama
+  s.ts = ts;
+  s.relay_on = relayOn;
+  s.sensor_ok = ok;
   if (ok) {
-    snprintf(meas, sizeof(meas),
-             "\"sensor_ok\":true,\"voltage\":%.1f,\"current\":%.3f,\"power\":%.1f,\"pf\":%.2f,"
-             "\"freq\":%.1f,\"energy_wh\":%lu",
-             d.v, d.i, d.p, d.pf, d.f, (unsigned long)d.e_wh);
+    s.v = d.v; s.i = d.i; s.p = d.p; s.pf = d.pf; s.f = d.f; s.e_wh = d.e_wh;
     Serial.printf("[%.3f] PZEM V=%.1f I=%.3f P=%.1f PF=%.2f f=%.1f E=%lu Wh\n", ts, d.v, d.i, d.p, d.pf, d.f,
                   (unsigned long)d.e_wh);
   } else {
-    snprintf(meas, sizeof(meas), "\"sensor_ok\":false,\"power\":null");
     Serial.printf("[%.3f] PZEM GAGAL dibaca, dikirim sensor_ok=false\n", ts);
   }
 
-  // Dibuat manual supaya ts tidak terpotong presisinya (epoch + milidetik).
+  if (queue.push(s)) {
+    Serial.printf("antrean penuh, sampel terlama dibuang (total dibuang=%lu)\n", (unsigned long)queue.dropped());
+  }
+}
+
+// Kirim satu sampel. SEND_OK hanya bila HTTP 200, JSON valid, dan ack_seq sama dengan seq yang dikirim.
+// SEND_DROP hanya untuk payload yang ditolak permanen (400/422), supaya satu sampel rusak tidak menyumbat antrean.
+// Semua kegagalan lain (timeout, 5xx, 401 salah kunci, Wi-Fi) SEND_RETRY: sampel tetap di antrean.
+static SendResult postSample(const Sample &s) {
   char body[448];
-  snprintf(body, sizeof(body),
-           "{\"device_id\":\"%s\",\"boot_id\":\"%s\",\"seq\":%lu,\"ts\":%.3f,\"source\":\"real\","
-           "\"relay_on\":%s,%s}",
-           DEVICE_ID, bootId, (unsigned long)seqNo, ts, relayOn ? "true" : "false", meas);
-  seqNo++;                          // naik tiap percobaan; celah seq tidak masalah, duplikat yang bermasalah
+  if (formatTelemetryJson(s, DEVICE_ID, bootId, body, sizeof(body)) < 0) {
+    Serial.printf("JSON seq=%lu terlalu panjang, sampel dibuang\n", (unsigned long)s.seq);
+    return SEND_DROP;
+  }
 
   WiFiClient client;
   HTTPClient http;
@@ -163,27 +178,47 @@ static void sendTelemetry() {
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-Key", API_KEY);
   int code = http.POST(body);
+
+  SendResult result = SEND_RETRY;
   if (code == 200) {
     JsonDocument doc;
-    if (!deserializeJson(doc, http.getString())) {
+    if (!deserializeJson(doc, http.getString()) && doc["ack_seq"].is<uint32_t>() &&
+        doc["ack_seq"].as<uint32_t>() == s.seq) {
       lockout = doc["lockout"] | false;
       balanceWh = doc["balance_wh"] | -1.0;
       lastAckMs = millis();
       haveAck = true;
-      sendOk++;
       if (lockout && relayOn) {     // cut-off lokal
         setRelay(false);
         resyncSinric = true;
         Serial.printf("[%.3f] LOCKOUT dari backend, relay dipaksa OFF\n", nowEpoch());
       }
+      result = SEND_OK;
     } else {
-      sendFail++;
+      Serial.printf("balasan 200 tidak valid atau ack_seq tidak cocok (seq=%lu)\n", (unsigned long)s.seq);
     }
+  } else if (code == 400 || code == 422) {
+    Serial.printf("backend menolak seq=%lu (kode %d), sampel dibuang\n", (unsigned long)s.seq, code);
+    result = SEND_DROP;
   } else {
-    sendFail++;
-    Serial.printf("kirim gagal, kode %d\n", code);
+    Serial.printf("kirim gagal seq=%lu, kode %d, antrean=%u\n", (unsigned long)s.seq, code, (unsigned)queue.size());
   }
   http.end();
+  return result;
+}
+
+// Kirim dari yang terlama. Berhenti di kegagalan pertama (coba lagi siklus berikutnya), dan dibatasi
+// MAX_FLUSH_PER_CYCLE / FLUSH_BUDGET_MS supaya loop() tidak tertahan saat antrean menumpuk.
+static void flushQueue() {
+  uint32_t t0 = millis();
+  uint8_t n = 0;
+  while (!queue.empty() && n < MAX_FLUSH_PER_CYCLE && millis() - t0 < FLUSH_BUDGET_MS) {
+    SendResult r = postSample(queue.front());
+    if (r == SEND_RETRY) { sendFail++; break; }
+    if (r == SEND_OK) sendOk++; else sendRejected++;
+    queue.pop();
+    n++;
+  }
 }
 
 void setup() {
@@ -215,14 +250,16 @@ void setup() {
 void loop() {
   SinricPro.handle();
 
-  if (WiFi.status() != WL_CONNECTED) {
-    if (millis() - lastWifiTryMs > 10000) {
-      lastWifiTryMs = millis();
-      WiFi.reconnect();
-    }
-  } else if (millis() - lastSendMs >= TELEMETRY_INTERVAL_MS) {
+  if (WiFi.status() != WL_CONNECTED && millis() - lastWifiTryMs > 10000) {
+    lastWifiTryMs = millis();
+    WiFi.reconnect();
+  }
+
+  // Sampel tetap diambil saat Wi-Fi putus (masuk antrean); pengiriman hanya bila Wi-Fi tersambung.
+  if (millis() - lastSendMs >= TELEMETRY_INTERVAL_MS) {
     lastSendMs = millis();
-    sendTelemetry();
+    sampleOnce();
+    if (WiFi.status() == WL_CONNECTED) flushQueue();
   }
 
   if (resyncSinric && SinricPro.isConnected()) {
@@ -234,9 +271,10 @@ void loop() {
 
   if (millis() - lastStatusMs >= 10000) {
     lastStatusMs = millis();
-    Serial.printf("[%.3f] relay=%d lockout=%d saldo=%.4f ack=%s kirim ok/gagal=%lu/%lu pzem ok/gagal=%lu/%lu wifi=%d sinric=%d\n",
+    Serial.printf("[%.3f] relay=%d lockout=%d saldo=%.4f ack=%s kirim ok/gagal/ditolak=%lu/%lu/%lu antrean=%u dibuang=%lu pzem ok/gagal=%lu/%lu wifi=%d sinric=%d\n",
                   nowEpoch(), relayOn, lockout, balanceWh, onPermitted() ? "segar" : "TIDAK segar",
-                  (unsigned long)sendOk, (unsigned long)sendFail, (unsigned long)pzemOk, (unsigned long)pzemFail,
+                  (unsigned long)sendOk, (unsigned long)sendFail, (unsigned long)sendRejected, (unsigned)queue.size(),
+                  (unsigned long)queue.dropped(), (unsigned long)pzemOk, (unsigned long)pzemFail,
                   WiFi.status() == WL_CONNECTED,
                   SinricPro.isConnected());
   }

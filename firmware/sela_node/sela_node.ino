@@ -26,6 +26,13 @@ static uint32_t lastSendMs = 0, lastStatusMs = 0, lastWifiTryMs = 0;
 static uint32_t sendOk = 0, sendFail = 0;
 static uint32_t pzemOk = 0, pzemFail = 0;
 
+// Harus didefinisikan SEBELUM fungsi pertama: Arduino IDE 1.x menaruh prototipe otomatis di sana.
+struct PzemData {
+  float v, i, p, pf, f;
+  uint32_t e_wh;
+  bool alarm;
+};
+
 static double nowEpoch() {
   struct timeval tv;
   gettimeofday(&tv, nullptr);
@@ -34,11 +41,6 @@ static double nowEpoch() {
 
 
 // ---- PZEM (Modbus-RTU langsung, sama dengan firmware/pzem_test) ----
-struct PzemData {
-  float v, i, p, pf, f;
-  uint32_t e_wh;
-  bool alarm;
-};
 
 static uint16_t crc16(const uint8_t *buf, size_t len) {
   uint16_t crc = 0xFFFF;

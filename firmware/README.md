@@ -40,7 +40,6 @@ PZEM TX ---[220]---+---[220]---+---[220]--- GND
 GPIO17 (TX2) ---------------------------- PZEM RX (langsung)
 ```
 
-Pembagi 1k dan 2k menurunkan 5 V jadi sekitar 3,3 V (5 x 2/3). Dua nilai lain dengan rasio 1:2 juga bisa (10k dan 20k).
 Asumsi yang harus dicek: logika TX PZEM adalah 5 V, dan RX PZEM menerima 3,3 V. Keduanya bergantung pada modul V4.0
 yang kalian punya, jadi cocokkan dengan dokumentasi modul dan ukur dengan multimeter di Minggu 2.
 

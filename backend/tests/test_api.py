@@ -112,7 +112,8 @@ def test_zero_balance_triggers_lockout_and_off_commands(client, env):
     con = sqlite3.connect(env / "t.db")
     cmds = con.execute("SELECT device_id, command, status FROM commands").fetchall()
     assert set(d for d, _, _ in cmds) == {"sela-node-a", "sela-node-b"}
-    assert all(c == "OFF" and s == "requested" for _, c, s in cmds)
+    assert all(c == "OFF" for _, c, _ in cmds)
+    assert {d: s for d, _, s in cmds} == {"sela-node-a": "sent", "sela-node-b": "requested"}
 
 
 def test_lockout_command_created_only_once(client, env):

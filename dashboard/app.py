@@ -17,6 +17,18 @@ REFRESH_S = 5
 REQUEST_TIMEOUT_S = 5
 LOW_BALANCE_RATIO = 0.2  # peringatan saldo rendah di 20% kuota acuan
 
+TOPUP_DEFAULT_WH = 5.0
+TOPUP_MAX_WH = 50.0
+
+CUTOFF_LABELS = {
+    "requested": "⏳ Cut-off diminta",
+    "sent": "📤 OFF terkirim, menunggu node",
+    "acknowledged": "📥 Node merespons, menunggu relay OFF",
+    "confirmed": "✅ OFF terkonfirmasi",
+    "failed": "❌ Cut-off gagal dikirim",
+    "timeout": "⏱️ Timeout, relay belum terkonfirmasi OFF",
+}
+
 NODE_LABELS = {
     "sela-node-a": "Node A (10 W)",
     "sela-node-b": "Node B (20 W)",
@@ -68,6 +80,23 @@ def fetch_state() -> Tuple[Optional[dict], Optional[str]]:
         return None, "Balasan backend bukan JSON"
 
 
+def post_topup(amount_wh: float) -> Tuple[Optional[dict], Optional[str]]:
+    """Return (state_baru, error). Memanggil POST /topup di backend."""
+    if not API_KEY:
+        return None, "SELA_API_KEY belum diisi di environment dashboard."
+    try:
+        r = requests.post(f"{API_URL}/topup", headers={"X-API-Key": API_KEY}, timeout=REQUEST_TIMEOUT_S,
+                          json={"amount_wh": amount_wh, "note": "top-up dari dashboard"})
+    except requests.RequestException as e:
+        return None, f"Backend tidak terjangkau ({API_URL}): {type(e).__name__}"
+    if r.status_code != 200:
+        return None, f"Top-up ditolak backend (HTTP {r.status_code})"
+    try:
+        return r.json(), None
+    except ValueError:
+        return None, "Balasan backend bukan JSON"
+
+
 # ---------- Format ----------
 
 def fmt(value: Optional[float], unit: str, digits: int = 1) -> str:
@@ -91,6 +120,21 @@ def measurements_caption(m: dict) -> str:
     return " · ".join(parts)
 
 
+def cutoff_caption(c: Optional[dict]) -> Optional[Tuple[str, str]]:
+    """(status, teks) untuk perintah cut-off terakhir sebuah node, atau None bila tidak ada."""
+    if not c or c["status"] not in CUTOFF_LABELS:
+        return None
+    extra = []
+    if c.get("latency_s") is not None:
+        extra.append(f"{c['latency_s']:.1f} dtk")
+    if c.get("attempts"):
+        extra.append(f"percobaan {c['attempts']}")
+    if c.get("last_error"):
+        extra.append(str(c["last_error"]))
+    text = CUTOFF_LABELS[c["status"]] + (f" ({', '.join(extra)})" if extra else "")
+    return c["status"], text
+
+
 # ---------- Tampilan ----------
 
 def connection_status(d: dict) -> str:
@@ -107,7 +151,7 @@ def lamp_status(relay_on: Optional[bool]) -> str:
     return "💡 ON" if relay_on else "⚫ OFF"
 
 
-def node_card(d: dict) -> None:
+def node_card(d: dict, lockout: bool = False) -> None:
     label = NODE_LABELS.get(d["device_id"], d["device_id"])
     with st.container(border=True):
         st.subheader(label)
@@ -122,6 +166,11 @@ def node_card(d: dict) -> None:
             st.caption(measurements_caption(m))
         if d["sensor_ok"] is False:
             st.caption("⚠️ Sensor gagal dibaca, daya tidak dihitung")
+
+        if lockout:   # status cut-off hanya relevan selama lockout aktif
+            cut = cutoff_caption(d.get("cutoff"))
+            if cut:
+                (st.warning if cut[0] in ("failed", "timeout") else st.caption)(f"Cut-off: {cut[1]}")
 
 
 def balance_section(state: dict) -> None:
@@ -156,16 +205,34 @@ def live_view() -> None:
     devices = state["devices"]
     for col, d in zip(st.columns(max(1, len(devices))), devices):
         with col:
-            node_card(d)
+            node_card(d, state["lockout"])
 
     if state["overshoot_wh"]:
         st.caption(f"Overshoot tercatat: {state['overshoot_wh']:.4f} Wh")
     st.caption(f"Diperbarui tiap {REFRESH_S} detik · backend {API_URL}")
 
 
+def topup_panel() -> None:
+    """Form top-up di sidebar (di luar fragment, supaya tidak ikut ter-refresh tiap 5 detik)."""
+    with st.sidebar:
+        st.subheader("Top-up saldo")
+        with st.form("topup_form"):
+            amount = st.number_input("Jumlah (Wh)", min_value=0.1, max_value=TOPUP_MAX_WH,
+                                     value=TOPUP_DEFAULT_WH, step=0.5)
+            submitted = st.form_submit_button("Top-up", type="primary")
+        if submitted:
+            new_state, err = post_topup(float(amount))
+            if err:
+                st.error(err)
+            else:
+                st.success(f"Top-up {amount:g} Wh berhasil. Saldo {new_state['balance_wh']:.3f} Wh.")
+        st.caption("Top-up melepas lockout, tetapi kedua lampu tetap OFF sampai ada perintah ON baru (Sinric).")
+
+
 def main() -> None:
     if not check_login():
         return
+    topup_panel()
     st.title("💡 SELA — Smart Energy Light Automation")
     live_view()
 

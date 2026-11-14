@@ -1,14 +1,16 @@
+import asyncio
 import os
 import secrets
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from . import service
+from . import commands, service
 from .db import connect, db_path, init_db, tx
+from .sinric_client import make_dispatcher_from_env
 
 
 def now() -> float:
@@ -19,12 +21,34 @@ def initial_balance() -> float:
     return float(os.environ.get("SELA_INITIAL_BALANCE_WH", "5"))
 
 
+async def _command_loop(dispatcher, tick_s: float) -> None:
+    """Latar belakang: kirim ulang OFF dan tandai timeout/failed, walau node tidak mengirim telemetri."""
+    while True:
+        try:
+            await asyncio.to_thread(commands.run_tick, db_path(), dispatcher, now(), now)
+        except Exception as e:  # noqa: BLE001  loop tidak boleh mati
+            print(f"[commands] tick gagal: {type(e).__name__}: {e}", flush=True)
+        await asyncio.sleep(tick_s)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not os.environ.get("SELA_API_KEY"):
         raise RuntimeError("SELA_API_KEY belum diisi. Salin .env.example jadi .env")
     init_db(db_path(), initial_balance(), now())
-    yield
+    task = None
+    tick_s = float(os.environ.get("SELA_CMD_TICK_S", "1"))
+    if tick_s > 0:
+        dispatcher = make_dispatcher_from_env()
+        print(f"[commands] pelacakan cut-off aktif, REST Sinric {'AKTIF' if dispatcher else 'nonaktif'}", flush=True)
+        task = asyncio.create_task(_command_loop(dispatcher, tick_s))
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="SELA Backend", lifespan=lifespan)

@@ -3,7 +3,7 @@ import os
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-from . import ledger
+from . import commands, ledger
 from .ledger import Sample
 
 
@@ -103,6 +103,7 @@ def process_telemetry(conn: sqlite3.Connection, t, now_s: float) -> Dict[str, An
         "UPDATE account SET balance_wh=?, overshoot_wh=?, lockout=?, low_alerted=?, updated_at=? WHERE id=1",
         (balance, overshoot, lockout, low_alerted, now_s),
     )
+    commands.on_telemetry(conn, t.device_id, t.boot_id, t.seq, bool(t.relay_on), bool(lockout), now_s)
     return _ack(t.seq, get_account(conn), False, now_s)
 
 
@@ -112,6 +113,7 @@ def get_state(conn: sqlite3.Connection, now_s: float) -> Dict[str, Any]:
     ids = list(expected_devices())
     ids += [d for d in rows if d not in ids]
 
+    cutoff = commands.latest_per_device(conn)
     devices = []
     total = 0.0
     partial = False
@@ -119,7 +121,8 @@ def get_state(conn: sqlite3.Connection, now_s: float) -> Dict[str, Any]:
         r = rows.get(dev)
         if r is None:
             devices.append({"device_id": dev, "online": False, "relay_on": None, "sensor_ok": None,
-                            "power_w": None, "last_ts": None, "age_s": None, "measurements": None})
+                            "power_w": None, "last_ts": None, "age_s": None, "measurements": None,
+                            "cutoff": cutoff.get(dev)})
             partial = True
             continue
         age = now_s - r["received_at"]
@@ -132,7 +135,8 @@ def get_state(conn: sqlite3.Connection, now_s: float) -> Dict[str, Any]:
         devices.append({"device_id": dev, "online": online, "relay_on": bool(r["relay_on"]),
                         "sensor_ok": bool(r["sensor_ok"]), "power_w": r["power_w"],
                         "last_ts": r["ts"], "age_s": round(age, 3),
-                        "measurements": dict(m) if m is not None else None})
+                        "measurements": dict(m) if m is not None else None,
+                        "cutoff": cutoff.get(dev)})
         if online and r["power_w"] is not None:
             total += r["power_w"]
         else:
@@ -159,6 +163,7 @@ def do_topup(conn: sqlite3.Connection, amount_wh: float, note: Optional[str], no
         "UPDATE account SET balance_wh=?, reference_wh=?, lockout=0, low_alerted=0, updated_at=? WHERE id=1",
         (new_balance, new_balance, now_s),
     )
+    commands.cancel_open(conn, now_s)
     _add_alert(conn, now_s, "topup", f"Top-up {amount_wh} Wh, lockout dilepas, lampu tetap OFF")
     return get_state(conn, now_s)
 
@@ -170,6 +175,7 @@ def do_reset(conn: sqlite3.Connection, balance_wh: float, now_s: float) -> Dict[
         (balance_wh, balance_wh, now_s),
     )
     conn.execute("DELETE FROM device_last")
+    commands.cancel_open(conn, now_s)
     return get_state(conn, now_s)
 
 

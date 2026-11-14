@@ -65,7 +65,16 @@ CREATE TABLE IF NOT EXISTS commands (
     status TEXT NOT NULL,
     reason TEXT,
     created_at REAL NOT NULL,
-    updated_at REAL NOT NULL
+    updated_at REAL NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at REAL,
+    sent_at REAL,
+    acked_at REAL,
+    confirmed_at REAL,
+    ref_boot TEXT,
+    ref_seq INTEGER,
+    channel TEXT,
+    last_error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -76,6 +85,24 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 """
 
+# Kolom tambahan tabel commands untuk database lama (CREATE TABLE IF NOT EXISTS tidak menambah kolom).
+COMMAND_COLUMNS = {
+    "attempts": "INTEGER NOT NULL DEFAULT 0",
+    "last_attempt_at": "REAL",
+    "sent_at": "REAL",
+    "acked_at": "REAL",
+    "confirmed_at": "REAL",
+    "ref_boot": "TEXT",
+    "ref_seq": "INTEGER",
+    "channel": "TEXT",
+    "last_error": "TEXT",
+}
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(commands)")}
+    for col, decl in COMMAND_COLUMNS.items():
+        if col not in have:
+            conn.execute(f"ALTER TABLE commands ADD COLUMN {col} {decl}")
 
 def db_path() -> str:
     return os.environ.get("SELA_DB_PATH", "./data/sela.db")
@@ -104,6 +131,7 @@ def init_db(path: str, initial_balance_wh: float, now_s: float) -> None:
     conn = connect(path)
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         row = conn.execute("SELECT 1 FROM account WHERE id = 1").fetchone()
         if row is None:
             conn.execute(

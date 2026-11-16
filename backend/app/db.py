@@ -103,6 +103,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col, decl in COMMAND_COLUMNS.items():
         if col not in have:
             conn.execute(f"ALTER TABLE commands ADD COLUMN {col} {decl}")
+    # Penanda awal hitungan "energi terpakai": baris ledger dengan id di atas nilai ini dihitung.
+    acc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(account)")}
+    if "ledger_start_id" not in acc_cols:
+        conn.execute("ALTER TABLE account ADD COLUMN ledger_start_id INTEGER NOT NULL DEFAULT 0")
 
 def db_path() -> str:
     return os.environ.get("SELA_DB_PATH", "./data/sela.db")

@@ -164,6 +164,7 @@ def node_card(d: dict, lockout: bool = False) -> None:
         m = d.get("measurements")
         if d["online"] and d["sensor_ok"] and m:
             st.caption(measurements_caption(m))
+        st.caption(f"Energi terpakai: {d.get('consumed_wh', 0.0):.3f} Wh")
         if d["sensor_ok"] is False:
             st.caption("⚠️ Sensor gagal dibaca, daya tidak dihitung")
 
@@ -178,10 +179,11 @@ def balance_section(state: dict) -> None:
     bal = state["balance_wh"]
     ratio = max(0.0, min(1.0, bal / ref)) if ref > 0 else 0.0
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Saldo", f"{bal:.3f} Wh")
-    c2.metric("Daya total", fmt_w(state["total_power_w"]))
-    c3.metric("Kuota acuan", f"{ref:.2f} Wh")
+    c2.metric("Energi terpakai", f"{state.get('consumed_wh', 0.0):.3f} Wh")
+    c3.metric("Daya total", fmt_w(state["total_power_w"]))
+    c4.metric("Kuota acuan", f"{ref:.2f} Wh")
     st.progress(ratio, text=f"Sisa {ratio * 100:.0f}% dari kuota acuan")
 
     if not state["lockout"] and ref > 0 and ratio <= LOW_BALANCE_RATIO:

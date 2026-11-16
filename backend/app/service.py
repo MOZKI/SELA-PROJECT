@@ -114,6 +114,10 @@ def get_state(conn: sqlite3.Connection, now_s: float) -> Dict[str, Any]:
     ids += [d for d in rows if d not in ids]
 
     cutoff = commands.latest_per_device(conn)
+    # Energi terpakai sejak reset terakhir (ledger tidak dihapus, hanya ditandai).
+    used = {r["device_id"]: r["wh"] for r in conn.execute(
+        "SELECT device_id, SUM(delta_wh) AS wh FROM ledger WHERE id > ? GROUP BY device_id",
+        (acc["ledger_start_id"],))}
     devices = []
     total = 0.0
     partial = False
@@ -122,7 +126,7 @@ def get_state(conn: sqlite3.Connection, now_s: float) -> Dict[str, Any]:
         if r is None:
             devices.append({"device_id": dev, "online": False, "relay_on": None, "sensor_ok": None,
                             "power_w": None, "last_ts": None, "age_s": None, "measurements": None,
-                            "cutoff": cutoff.get(dev)})
+                            "cutoff": cutoff.get(dev), "consumed_wh": round(used.get(dev, 0.0), 6)})
             partial = True
             continue
         age = now_s - r["received_at"]
@@ -136,7 +140,7 @@ def get_state(conn: sqlite3.Connection, now_s: float) -> Dict[str, Any]:
                         "sensor_ok": bool(r["sensor_ok"]), "power_w": r["power_w"],
                         "last_ts": r["ts"], "age_s": round(age, 3),
                         "measurements": dict(m) if m is not None else None,
-                        "cutoff": cutoff.get(dev)})
+                        "cutoff": cutoff.get(dev), "consumed_wh": round(used.get(dev, 0.0), 6)})
         if online and r["power_w"] is not None:
             total += r["power_w"]
         else:
@@ -146,6 +150,7 @@ def get_state(conn: sqlite3.Connection, now_s: float) -> Dict[str, Any]:
         "balance_wh": round(acc["balance_wh"], 6),
         "reference_wh": acc["reference_wh"],
         "overshoot_wh": round(acc["overshoot_wh"], 6),
+        "consumed_wh": round(sum(used.values()), 6),
         "lockout": bool(acc["lockout"]),
         "total_power_w": round(total, 3),
         "partial": partial,
@@ -174,6 +179,7 @@ def do_reset(conn: sqlite3.Connection, balance_wh: float, now_s: float) -> Dict[
         "UPDATE account SET balance_wh=?, reference_wh=?, overshoot_wh=0, lockout=0, low_alerted=0, updated_at=? WHERE id=1",
         (balance_wh, balance_wh, now_s),
     )
+    conn.execute("UPDATE account SET ledger_start_id = (SELECT COALESCE(MAX(id), 0) FROM ledger) WHERE id = 1")
     conn.execute("DELETE FROM device_last")
     commands.cancel_open(conn, now_s)
     return get_state(conn, now_s)
